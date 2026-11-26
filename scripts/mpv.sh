@@ -40,6 +40,8 @@ ninja -j$CORES
 ninja install
 
 cd $DEST/mpv/lib
-mv libmpv.so ../../libmpv.so
+# libmpv.so 是指向 libmpv.so.2 的相对符号链接；直接 mv 会造成断链，zip 打包失败。
+# 用 cp -L 解引用为真实文件内容，保证产物可独立下载。
+cp -L libmpv.so ../../libmpv.so
 
 popd
