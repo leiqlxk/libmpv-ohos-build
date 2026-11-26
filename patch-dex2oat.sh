@@ -83,6 +83,20 @@ m_changed = patch(meson, [
     ),
 ])
 
+# ---------------- options/options.h ----------------
+# options.c:252 注册了 "ohos-surface-size" -> OPT_SIZE_BOX(ohos_surface_size)，
+# 但 struct mp_vo_opts 缺少该成员（同 android_surface_size / d3d11_composition_size）。
+# 补上它，否则编译报 no member named 'ohos_surface_size' in 'struct mp_vo_opts'。
+opt_h = os.path.join(mpv_dir, 'options', 'options.h')
+o_changed = patch(opt_h, [
+    (
+        "    struct m_geometry android_surface_size;\n",
+        "    struct m_geometry android_surface_size;\n"
+        "\n"
+        "    struct m_geometry ohos_surface_size;\n",
+    ),
+])
+
 # ---------------- video/out/vo.c ----------------
 vo = os.path.join(mpv_dir, 'video', 'out', 'vo.c')
 v_changed = patch(vo, [
@@ -122,7 +136,12 @@ for gone in ('video_out_ohcodec', 'HAVE_OHOS_OSD_OVERLAY'):
 if '&video_out_gpu,' not in v:
     sys.exit('patch-dex2oat.sh: vo.c 驱动列表异常（缺 video_out_gpu）')
 
-print('patch-dex2oat.sh: meson.build=%s, vo.c=%s' %
+oh = read(opt_h)
+if 'struct m_geometry ohos_surface_size;' not in oh:
+    sys.exit('patch-dex2oat.sh: options.h 缺少 ohos_surface_size 成员')
+
+print('patch-dex2oat.sh: meson.build=%s, options.h=%s, vo.c=%s' %
       ('patched' if m_changed else 'ok/already',
+       'patched' if o_changed else 'ok/already',
        'patched' if v_changed else 'ok/already'))
 PY
