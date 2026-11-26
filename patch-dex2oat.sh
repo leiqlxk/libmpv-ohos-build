@@ -90,10 +90,14 @@ m_changed = patch(meson, [
 opt_h = os.path.join(mpv_dir, 'options', 'options.h')
 o_changed = patch(opt_h, [
     (
-        "    struct m_geometry android_surface_size;\n",
         "    struct m_geometry android_surface_size;\n"
         "\n"
-        "    struct m_geometry ohos_surface_size;\n",
+        "    struct m_geometry d3d11_composition_size;\n",
+        "    struct m_geometry android_surface_size;\n"
+        "\n"
+        "    struct m_geometry ohos_surface_size;\n"
+        "\n"
+        "    struct m_geometry d3d11_composition_size;\n",
     ),
 ])
 
@@ -115,6 +119,74 @@ v_changed = patch(vo, [
         "    &video_out_ohcodec,\n"
         "#endif\n",
         "",
+    ),
+])
+
+# ---------------- video/out/ohos_common.c ----------------
+ohos_c = os.path.join(mpv_dir, 'video', 'out', 'ohos_common.c')
+c_changed = patch(ohos_c, [
+    # A) 记录窗口所有权：surfaceId 创建的窗口 mpv 拥有，借用的指针不拥有
+    (
+        "struct vo_ohos_state {\n"
+        "    struct mp_log *log;\n"
+        "    OHNativeWindow *native_window;\n"
+        "};\n",
+        "struct vo_ohos_state {\n"
+        "    struct mp_log *log;\n"
+        "    OHNativeWindow *native_window;\n"
+        "    // true: mpv created the window from surfaceId and must destroy it.\n"
+        "    // false: borrowed OHNativeWindow* passed by the App (YourPipe wid protocol).\n"
+        "    bool owns_window;\n"
+        "};\n",
+    ),
+    # B) YourPipe wid 协议：wid < 2^40 借用 OHNativeWindow*，否则当作 surfaceId
+    (
+        r'''    // WinID is int64_t from mpv options, surface ID is uint64_t.
+    // On OHOS, surface IDs are always non-negative, so direct cast is safe.
+    uint64_t surface = (uint64_t)vo->opts->WinID;
+    OH_NativeWindow_CreateNativeWindowFromSurfaceId(surface, &ctx->native_window);
+    if (!ctx->native_window) {
+        MP_FATAL(ctx, "Failed to create OHNativeWindow\n");
+        goto fail;
+    }
+''',
+        r'''    // YourPipe wid protocol: wid < 2^40 is a borrowed OHNativeWindow*
+    // pointer (App owns it); wid >= 2^40 is an XComponent surfaceId that
+    // mpv turns into a window it owns.
+    uint64_t wid = (uint64_t)vo->opts->WinID;
+    if (wid < (1ULL << 40)) {
+        ctx->native_window = (OHNativeWindow *)(uintptr_t)wid;
+    } else {
+        OH_NativeWindow_CreateNativeWindowFromSurfaceId(wid, &ctx->native_window);
+        if (!ctx->native_window) {
+            MP_FATAL(ctx, "Failed to create OHNativeWindow\n");
+            goto fail;
+        }
+        ctx->owns_window = true;
+    }
+''',
+    ),
+    # C) 只销毁 mpv 自己创建的窗口，借用的指针绝不能销毁
+    (
+        "    if (ctx->native_window)\n"
+        "        OH_NativeWindow_DestroyNativeWindow(ctx->native_window);\n",
+        "    if (ctx->native_window && ctx->owns_window)\n"
+        "        OH_NativeWindow_DestroyNativeWindow(ctx->native_window);\n",
+    ),
+])
+
+# ---------------- video/out/hwdec/hwdec_ohcodec.c ----------------
+hwdec_c = os.path.join(mpv_dir, 'video', 'out', 'hwdec', 'hwdec_ohcodec.c')
+h_changed = patch(hwdec_c, [
+    # D) p->window 是 vo_ohos_native_window() 借来的，所有权归 VO/App
+    (
+        "    // Destroy native_window if we created it\n"
+        "    if (p->window) {\n"
+        "        OH_NativeWindow_DestroyNativeWindow(p->window);\n"
+        "        p->window = NULL;\n"
+        "    }\n",
+        "    // p->window is borrowed from the VO; ownership stays with vo_ohos_state/App.\n"
+        "    p->window = NULL;\n",
     ),
 ])
 
@@ -140,8 +212,27 @@ oh = read(opt_h)
 if 'struct m_geometry ohos_surface_size;' not in oh:
     sys.exit('patch-dex2oat.sh: options.h 缺少 ohos_surface_size 成员')
 
-print('patch-dex2oat.sh: meson.build=%s, options.h=%s, vo.c=%s' %
+oc = read(ohos_c)
+for needed in ('bool owns_window;',
+               'uint64_t wid = (uint64_t)vo->opts->WinID;',
+               'if (wid < (1ULL << 40))',
+               '(OHNativeWindow *)(uintptr_t)wid',
+               'ctx->owns_window = true;',
+               'if (ctx->native_window && ctx->owns_window)'):
+    if needed not in oc:
+        sys.exit('patch-dex2oat.sh: ohos_common.c 缺少 wid 协议补丁: %s' % needed)
+if 'OH_NativeWindow_CreateNativeWindowFromSurfaceId(surface' in oc:
+    sys.exit('patch-dex2oat.sh: ohos_common.c 仍是旧 surfaceId 硬编码路径')
+
+hc = read(hwdec_c)
+if 'OH_NativeWindow_DestroyNativeWindow(p->window)' in hc:
+    sys.exit('patch-dex2oat.sh: hwdec_ohcodec.c 仍在销毁借用的 window')
+
+print('patch-dex2oat.sh: meson.build=%s, options.h=%s, vo.c=%s, '
+      'ohos_common.c=%s, hwdec_ohcodec.c=%s' %
       ('patched' if m_changed else 'ok/already',
        'patched' if o_changed else 'ok/already',
-       'patched' if v_changed else 'ok/already'))
+       'patched' if v_changed else 'ok/already',
+       'patched' if c_changed else 'ok/already',
+       'patched' if h_changed else 'ok/already'))
 PY
