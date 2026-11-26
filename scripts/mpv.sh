@@ -10,6 +10,7 @@ pushd $ROOT_DIR/libmpv/mpv
 
 if [ "$1" == "build" ]; then
 	echo -e "\nBuilding mpv..."
+	"$ROOT_DIR/patch-dex2oat.sh" "$ROOT_DIR/libmpv/mpv"
 elif [ "$1" == "clean" ]; then
 	rm -rf .build
 	exit 0

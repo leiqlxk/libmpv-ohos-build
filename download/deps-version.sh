@@ -28,4 +28,4 @@ V_FFMPEG=feat-ohos-n8.0
 V_LIBASS=0.17.4
 V_LIBPLACEBO=v7.360.1
 V_LUA=5.2.4
-V_MPV=feat-ohos-0.41.0
+V_MPV=master
